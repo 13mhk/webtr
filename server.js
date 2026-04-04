@@ -79,10 +79,17 @@ async function googleTranslate(text, targetLang) {
   return { translated, sourceLang, candidates };
 }
 
-async function myMemoryTranslate(text, targetLang) {
+function normalizeLangCode(language) {
+  if (!language) return '';
+  const lowered = String(language).toLowerCase();
+  if (lowered.startsWith('zh')) return 'zh';
+  return lowered.split('-')[0];
+}
+
+async function myMemoryTranslate(text, sourceLang, targetLang) {
   const url = new URL('https://api.mymemory.translated.net/get');
   url.searchParams.set('q', text);
-  url.searchParams.set('langpair', `auto|${targetLang}`);
+  url.searchParams.set('langpair', `${sourceLang}|${targetLang}`);
 
   const response = await fetch(url);
   if (!response.ok) throw new Error(`MyMemory failed (${response.status})`);
@@ -192,21 +199,33 @@ async function handleTranslate(req, res) {
 
   req.on('end', async () => {
     try {
-      const { word, sentence, targetLang = 'en' } = JSON.parse(body || '{}');
+      const { word, sentence } = JSON.parse(body || '{}');
+      const targetLang = 'en';
       if (!word || !sentence) return send(res, 400, JSON.stringify({ error: 'word and sentence are required' }), 'application/json');
 
-      const [wordGoogle, wordMemory, sentenceGoogle] = await Promise.allSettled([
+      const [wordGoogle, sentenceGoogle] = await Promise.allSettled([
         googleTranslate(word, targetLang),
-        myMemoryTranslate(word, targetLang),
         googleTranslate(sentence, targetLang)
       ]);
 
       const allCandidates = [];
       let detectedLanguage = 'auto';
+      let wordMemory = { status: 'rejected' };
 
       if (wordGoogle.status === 'fulfilled') {
         allCandidates.push(...wordGoogle.value.candidates);
         detectedLanguage = wordGoogle.value.sourceLang || detectedLanguage;
+
+        const myMemorySourceLang = normalizeLangCode(detectedLanguage);
+        const allowedMyMemorySources = new Set(['fi', 'sv', 'nl', 'it']);
+        if (allowedMyMemorySources.has(myMemorySourceLang)) {
+          try {
+            const value = await myMemoryTranslate(word, myMemorySourceLang, targetLang);
+            wordMemory = { status: 'fulfilled', value };
+          } catch {
+            wordMemory = { status: 'rejected' };
+          }
+        }
       }
       if (wordMemory.status === 'fulfilled') {
         allCandidates.push(...wordMemory.value.candidates);
