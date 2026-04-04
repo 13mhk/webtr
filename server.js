@@ -111,12 +111,6 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
   return { translated, sourceLang: 'auto', candidates };
 }
 
-function stripAdContainers(html) {
-  return html
-    .replace(/<iframe[^>]+(?:ads|doubleclick|googlesyndication)[^>]*>[\s\S]*?<\/iframe>/gi, '')
-    .replace(/<[^>]+(?:id|class)=["'][^"']*(?:advert|ad-|ad_)[^"']*["'][^>]*>[\s\S]*?<\/[^>]+>/gi, '');
-}
-
 function rewriteAttributeUrls(html, baseUrl) {
   const rewrite = (value, isLink) => {
     if (!value || value.startsWith('#') || value.startsWith('data:') || value.startsWith('javascript:')) {
@@ -143,6 +137,41 @@ function injectBase(html, baseUrl) {
     return html.replace(/<base\s+[^>]*>/i, `<base href="${baseUrl}">`);
   }
   return html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseUrl}">`);
+}
+
+function injectLinkNavigationGuard(html, baseUrl) {
+  const script = `
+<script>
+(() => {
+  const toProxyUrl = (value) => {
+    try {
+      const absolute = new URL(value, ${JSON.stringify(baseUrl)}).toString();
+      return '/proxy?url=' + encodeURIComponent(absolute);
+    } catch {
+      return value;
+    }
+  };
+
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+    const link = event.target?.closest?.('a[href]');
+    if (!link) return;
+
+    const href = link.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('data:')) return;
+
+    event.preventDefault();
+    window.location.assign(toProxyUrl(href));
+  }, true);
+})();
+</script>`;
+
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `${script}</head>`);
+  }
+  return `${script}${html}`;
 }
 
 async function handleProxy(req, res, parsedUrl) {
@@ -178,9 +207,9 @@ async function handleProxy(req, res, parsedUrl) {
 
     const baseUrl = upstream.url || validated.toString();
     let html = await upstream.text();
-    html = stripAdContainers(html);
     html = injectBase(html, baseUrl);
     html = rewriteAttributeUrls(html, baseUrl);
+    html = injectLinkNavigationGuard(html, baseUrl);
 
     send(res, 200, html, 'text/html; charset=utf-8');
   } catch (error) {
