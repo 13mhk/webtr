@@ -112,24 +112,20 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
 }
 
 function rewriteAttributeUrls(html, baseUrl) {
-  const rewrite = (value, isLink) => {
+  const rewriteSrc = (value) => {
     if (!value || value.startsWith('#') || value.startsWith('data:') || value.startsWith('javascript:')) {
       return value;
     }
     try {
-      const abs = new URL(value, baseUrl).toString();
-      return isLink ? `/proxy?url=${encodeURIComponent(abs)}` : abs;
+      return new URL(value, baseUrl).toString();
     } catch {
       return value;
     }
   };
 
-  const hrefRe = /(href\s*=\s*["'])([^"']+)(["'])/gi;
   const srcRe = /(src\s*=\s*["'])([^"']+)(["'])/gi;
 
-  let out = html.replace(hrefRe, (_, p1, url, p3) => `${p1}${rewrite(url, true)}${p3}`);
-  out = out.replace(srcRe, (_, p1, url, p3) => `${p1}${rewrite(url, false)}${p3}`);
-  return out;
+  return html.replace(srcRe, (_, p1, url, p3) => `${p1}${rewriteSrc(url)}${p3}`);
 }
 
 function injectBase(html, baseUrl) {
