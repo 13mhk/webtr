@@ -196,5 +196,5 @@ readerFrame.addEventListener('load', () => {
   attachHoverLogic();
 });
 
-setFrameUrl('https://www.bbc.com/mundo');
-urlInput.value = 'https://www.bbc.com/mundo';
+setFrameUrl('https://yle.fi');
+urlInput.value = 'https://yle.fi';

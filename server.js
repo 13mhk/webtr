@@ -112,10 +112,22 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
 }
 
 function rewriteAttributeUrls(html, baseUrl) {
-  const rewriteSrc = (value) => {
-    if (!value || value.startsWith('#') || value.startsWith('data:') || value.startsWith('javascript:')) {
-      return value;
-    }
+  const shouldSkipUrl = (value) => {
+    if (!value) return true;
+    const lowered = value.trim().toLowerCase();
+    return (
+      lowered.startsWith('#') ||
+      lowered.startsWith('data:') ||
+      lowered.startsWith('javascript:') ||
+      lowered.startsWith('mailto:') ||
+      lowered.startsWith('tel:') ||
+      lowered.startsWith('blob:') ||
+      lowered.startsWith('about:')
+    );
+  };
+
+  const toAbsolute = (value) => {
+    if (shouldSkipUrl(value)) return value;
     try {
       return new URL(value, baseUrl).toString();
     } catch {
@@ -123,9 +135,27 @@ function rewriteAttributeUrls(html, baseUrl) {
     }
   };
 
-  const srcRe = /(src\s*=\s*["'])([^"']+)(["'])/gi;
+  const toProxyUrl = (value) => {
+    const absolute = toAbsolute(value);
+    if (absolute === value && shouldSkipUrl(value)) return value;
+    return `/proxy?url=${encodeURIComponent(absolute)}`;
+  };
 
-  return html.replace(srcRe, (_, p1, url, p3) => `${p1}${rewriteSrc(url)}${p3}`);
+  const rewriteSrc = (value) => {
+    if (!value || value.startsWith('#') || value.startsWith('data:') || value.startsWith('javascript:')) {
+      return value;
+    }
+    return toAbsolute(value);
+  };
+
+  const srcRe = /(src\s*=\s*["'])([^"']+)(["'])/gi;
+  const anchorHrefRe = /(<a\b[^>]*\shref\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
+  const formActionRe = /(<form\b[^>]*\saction\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
+
+  return html
+    .replace(srcRe, (_, p1, url, p3) => `${p1}${rewriteSrc(url)}${p3}`)
+    .replace(anchorHrefRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`)
+    .replace(formActionRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`);
 }
 
 function injectBase(html, baseUrl) {
