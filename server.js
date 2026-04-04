@@ -117,6 +117,34 @@ function stripAdContainers(html) {
     .replace(/<[^>]+(?:id|class)=["'][^"']*(?:advert|ad-|ad_)[^"']*["'][^>]*>[\s\S]*?<\/[^>]+>/gi, '');
 }
 
+function stripScriptsAndNoScript(html) {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '');
+}
+
+function stripMetaFrameAncestors(html) {
+  return html.replace(/<meta[^>]+http-equiv=["']content-security-policy["'][^>]*>/gi, (tag) => {
+    if (!/frame-ancestors/i.test(tag)) return tag;
+    const contentMatch = tag.match(/content=["']([^"']+)["']/i);
+    if (!contentMatch) return '';
+
+    const directives = contentMatch[1]
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((directive) => !directive.toLowerCase().startsWith('frame-ancestors'));
+
+    if (directives.length === 0) return '';
+    return tag.replace(contentMatch[1], directives.join('; '));
+  });
+}
+
+function shouldStripScripts(hostname) {
+  const scriptRestrictedHosts = ['yle.fi', 'hs.fi'];
+  return scriptRestrictedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+}
+
 function rewriteAttributeUrls(html, baseUrl) {
   const rewrite = (value, isLink) => {
     if (!value || value.startsWith('#') || value.startsWith('data:') || value.startsWith('javascript:')) {
@@ -177,8 +205,13 @@ async function handleProxy(req, res, parsedUrl) {
     }
 
     const baseUrl = upstream.url || validated.toString();
+    const upstreamHost = new URL(baseUrl).hostname.toLowerCase();
     let html = await upstream.text();
     html = stripAdContainers(html);
+    html = stripMetaFrameAncestors(html);
+    if (shouldStripScripts(upstreamHost)) {
+      html = stripScriptsAndNoScript(html);
+    }
     html = injectBase(html, baseUrl);
     html = rewriteAttributeUrls(html, baseUrl);
 
