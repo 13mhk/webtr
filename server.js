@@ -111,10 +111,8 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
   return { translated, sourceLang: 'auto', candidates };
 }
 
-function stripAdsAndScripts(html) {
+function stripAdContainers(html) {
   return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '')
     .replace(/<iframe[^>]+(?:ads|doubleclick|googlesyndication)[^>]*>[\s\S]*?<\/iframe>/gi, '')
     .replace(/<[^>]+(?:id|class)=["'][^"']*(?:advert|ad-|ad_)[^"']*["'][^>]*>[\s\S]*?<\/[^>]+>/gi, '');
 }
@@ -180,7 +178,7 @@ async function handleProxy(req, res, parsedUrl) {
 
     const baseUrl = upstream.url || validated.toString();
     let html = await upstream.text();
-    html = stripAdsAndScripts(html);
+    html = stripAdContainers(html);
     html = injectBase(html, baseUrl);
     html = rewriteAttributeUrls(html, baseUrl);
 
