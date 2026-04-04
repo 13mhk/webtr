@@ -1,6 +1,5 @@
 const urlForm = document.getElementById('urlForm');
 const urlInput = document.getElementById('urlInput');
-const targetLangSelect = document.getElementById('targetLang');
 const readerFrame = document.getElementById('readerFrame');
 
 const wordText = document.getElementById('wordText');
@@ -141,14 +140,14 @@ function getHoveredWordInfo(doc, event) {
 }
 
 async function requestTranslation(word, sentence) {
-  const payloadKey = `${word}||${sentence}||${targetLangSelect.value}`;
+  const payloadKey = `${word}||${sentence}||en`;
   if (payloadKey === lastPayloadKey) return;
   lastPayloadKey = payloadKey;
 
   const response = await fetch('/api/translate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ word, sentence, targetLang: targetLangSelect.value })
+    body: JSON.stringify({ word, sentence, targetLang: 'en' })
   });
 
   if (!response.ok) {
