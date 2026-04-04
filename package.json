@@ -1,0 +1,11 @@
+{
+  "name": "webtr",
+  "version": "1.0.0",
+  "description": "Foreign-language web reader with hover translation panel",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  }
+}
