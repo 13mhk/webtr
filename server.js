@@ -169,7 +169,16 @@ function injectLinkNavigationGuard(html, baseUrl) {
   const script = `
 <script>
 (() => {
+  const skipSchemes = ['#', 'javascript:', 'data:', 'mailto:', 'tel:', 'blob:', 'about:'];
+
+  const shouldSkip = (value) => {
+    if (!value) return true;
+    const lowered = String(value).trim().toLowerCase();
+    return skipSchemes.some((item) => lowered.startsWith(item));
+  };
+
   const toProxyUrl = (value) => {
+    if (shouldSkip(value)) return value;
     try {
       const absolute = new URL(value, ${JSON.stringify(baseUrl)}).toString();
       return '/proxy?url=' + encodeURIComponent(absolute);
@@ -178,19 +187,68 @@ function injectLinkNavigationGuard(html, baseUrl) {
     }
   };
 
+  const navigate = (value, replace = false) => {
+    const next = toProxyUrl(value);
+    if (!next || next === value && shouldSkip(value)) return;
+    if (replace) {
+      window.location.replace(next);
+      return;
+    }
+    window.location.assign(next);
+  };
+
   document.addEventListener('click', (event) => {
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
-    const link = event.target?.closest?.('a[href]');
+    const link = event.target?.closest?.('a[href], area[href]');
     if (!link) return;
 
     const href = link.getAttribute('href');
-    if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('data:')) return;
+    if (shouldSkip(href)) return;
 
     event.preventDefault();
-    window.location.assign(toProxyUrl(href));
+    navigate(href);
   }, true);
+
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.key !== 'Enter') return;
+    const active = document.activeElement;
+    if (!active || active.tagName !== 'A') return;
+    const href = active.getAttribute('href');
+    if (shouldSkip(href)) return;
+    event.preventDefault();
+    navigate(href);
+  }, true);
+
+  document.addEventListener('submit', (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+
+    const action = form.getAttribute('action') || window.location.href;
+    const method = (form.getAttribute('method') || 'get').toLowerCase();
+    if (method !== 'get') return;
+
+    event.preventDefault();
+    const data = new FormData(form);
+    const actionUrl = new URL(action, ${JSON.stringify(baseUrl)});
+    for (const [key, value] of data.entries()) {
+      actionUrl.searchParams.append(key, String(value));
+    }
+    navigate(actionUrl.toString());
+  }, true);
+
+  const wrapHistory = (methodName) => {
+    const original = history[methodName];
+    history[methodName] = function patchedHistory(state, title, url) {
+      if (typeof url === 'string' && !shouldSkip(url)) {
+        return original.call(this, state, title, toProxyUrl(url));
+      }
+      return original.call(this, state, title, url);
+    };
+  };
+  wrapHistory('pushState');
+  wrapHistory('replaceState');
 })();
 </script>`;
 
@@ -212,12 +270,36 @@ async function handleProxy(req, res, parsedUrl) {
     return send(res, 400, 'Invalid target URL');
   }
 
+  const method = req.method || 'GET';
+  const hasBody = !['GET', 'HEAD'].includes(method);
+
+  const bodyChunks = [];
+  let bodySize = 0;
+  if (hasBody) {
+    for await (const chunk of req) {
+      bodyChunks.push(chunk);
+      bodySize += chunk.length;
+      if (bodySize > 5e6) {
+        return send(res, 413, 'Payload too large');
+      }
+    }
+  }
+
   try {
+    const upstreamHeaders = {
+      'user-agent': req.headers['user-agent'] || 'Mozilla/5.0 (webtr proxy)',
+      'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9'
+    };
+    if (hasBody && req.headers['content-type']) {
+      upstreamHeaders['content-type'] = req.headers['content-type'];
+    }
+
     const upstream = await fetch(validated, {
+      method,
       headers: {
-        'user-agent': req.headers['user-agent'] || 'Mozilla/5.0 (webtr proxy)',
-        'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9'
+        ...upstreamHeaders
       },
+      body: hasBody ? Buffer.concat(bodyChunks) : undefined,
       redirect: 'follow'
     });
 
@@ -330,7 +412,7 @@ async function serveStatic(res, reqPath) {
 const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
 
-  if (req.method === 'GET' && parsedUrl.pathname === '/proxy') {
+  if (parsedUrl.pathname === '/proxy' && ['GET', 'HEAD', 'POST'].includes(req.method || 'GET')) {
     return handleProxy(req, res, parsedUrl);
   }
 
