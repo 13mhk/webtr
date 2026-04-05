@@ -27,15 +27,30 @@ function normalizeWord(raw) {
 function guessRoot(word) {
   const w = normalizeWord(word);
   if (!w) return '';
-  const finnishEndings = [
-    'ssa', 'ssä', 'sta', 'stä', 'lla', 'llä', 'lta', 'ltä', 'lle',
-    'na', 'nä', 'ksi', 'tta', 'ttä', 'ineen', 'nsa', 'nsä',
-    'ni', 'si', 'mme', 'nne', 't', 'n', 'a', 'ä'
-  ];
-  for (const suffix of finnishEndings) {
-    if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
+  const finnishPossessive = ['ni', 'si', 'mme', 'nne', 'nsa', 'nsä'];
+  for (const suffix of finnishPossessive) {
+    if (w.length > suffix.length + 4 && w.endsWith(suffix)) {
       return w.slice(0, -suffix.length);
     }
+  }
+  const finnishEndings = [
+    'issakin', 'issäkin', 'ssakin', 'ssäkin', 'istakin', 'istäkin',
+    'ssakaan', 'ssäkään', 'stakaan', 'stakään', 'llakin', 'lläkin',
+    'ltakin', 'ltäkin', 'llekin', 'issaan', 'issään', 'ssaan', 'ssään',
+    'istaan', 'istään', 'staan', 'stään', 'llaan', 'llään', 'ltaan', 'ltään',
+    'ssa', 'ssä', 'sta', 'stä', 'lla', 'llä', 'lta', 'ltä', 'lle',
+    'na', 'nä', 'ksi', 'tta', 'ttä', 'ineen'
+  ];
+  for (const suffix of finnishEndings) {
+    if (w.length > suffix.length + 4 && w.endsWith(suffix)) {
+      return w.slice(0, -suffix.length);
+    }
+  }
+  if (w.length > 4 && w.endsWith('n')) {
+    return w.slice(0, -1);
+  }
+  if (w.length > 5 && w.endsWith('t')) {
+    return w.slice(0, -1);
   }
   const suffixes = ['ing', 'ed', 'es', 's', 'mente', 'tion', 'ions'];
   for (const suffix of suffixes) {
@@ -52,6 +67,35 @@ function extractFinnishCompoundParts(word) {
   if (normalized.includes('-')) {
     return normalized.split('-').map((part) => part.trim()).filter((part) => part.length > 1);
   }
+  const headCandidates = [
+    'toimittaja', 'johtaja', 'kirjailija', 'opettaja', 'ministeri', 'poliisi', 'kaupunki', 'valtio',
+    'kieli', 'keskus', 'asema', 'alue', 'talo', 'koulu', 'päivä', 'ilta', 'aika', 'ryhmä',
+    'järjestö', 'toimisto', 'työ', 'markkina', 'palvelu', 'ohjelma', 'sivu', 'uutinen'
+  ];
+
+  for (const head of headCandidates) {
+    if (!normalized.endsWith(head)) continue;
+    const prefix = normalized.slice(0, -head.length);
+    if (prefix.length < 3) continue;
+
+    const cleanedPrefix = prefix.replace(/[aeouyäö]$/, '');
+    const first = cleanedPrefix.length >= 3 ? cleanedPrefix : prefix;
+    if (first.length >= 3) {
+      return [first, head];
+    }
+  }
+
+  const connectors = new Set(['a', 'ä', 'e', 'i', 'o', 'ö', 'u', 'y']);
+  for (let i = 4; i <= normalized.length - 4; i += 1) {
+    const left = normalized.slice(0, i);
+    const right = normalized.slice(i);
+    if (right.length < 4 || left.length < 3) continue;
+    const connectorBoost = connectors.has(left[left.length - 1]) ? 1 : 0;
+    if (connectorBoost && /^[\p{L}]{4,}$/u.test(right)) {
+      return [left.replace(/[aeouyäö]$/, ''), right].filter((part) => part.length > 2);
+    }
+  }
+
   return [];
 }
 
@@ -354,14 +398,29 @@ function injectWebtrOverlay(html, baseUrl) {
     }
   };
 
-  const getSentenceAround = (container, offset) => {
-    const text = container.textContent || '';
+  const sentenceContainers = 'p, li, dd, dt, blockquote, figcaption, h1, h2, h3, h4, h5, h6, article, section, div, td, th, span';
+
+  const getSentenceAround = (node, startOffset) => {
+    const containerElement = node.parentElement?.closest(sentenceContainers) || node.parentElement || document.body;
+    const text = (containerElement?.innerText || containerElement?.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!text) return '';
+
+    let absoluteOffset = 0;
+    try {
+      const prefixRange = document.createRange();
+      prefixRange.selectNodeContents(containerElement);
+      prefixRange.setEnd(node, Math.max(0, startOffset));
+      absoluteOffset = (prefixRange.toString() || '').length;
+    } catch {
+      absoluteOffset = Math.max(0, startOffset);
+    }
+
     const endMarks = /[.!?。！？]/;
 
-    let start = offset;
+    let start = Math.min(absoluteOffset, text.length);
     while (start > 0 && !endMarks.test(text[start - 1])) start -= 1;
 
-    let end = offset;
+    let end = Math.min(absoluteOffset, text.length);
     while (end < text.length && !endMarks.test(text[end])) end += 1;
     if (end < text.length) end += 1;
 
