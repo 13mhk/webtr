@@ -7,7 +7,9 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="topbar">
+    <main class="home">
+      <h1>webtr</h1>
+      <p>Open any URL through the proxy and use the in-page translation sidebar.</p>
       <form id="urlForm" class="url-form">
         <input
           id="urlInput"
@@ -17,47 +19,6 @@
         />
         <button type="submit">Open</button>
       </form>
-      <p class="lang-select">Target language: <strong>English</strong></p>
-    </header>
-
-    <main class="layout">
-      <section class="viewer">
-        <iframe id="readerFrame" title="foreign webpage viewer"></iframe>
-      </section>
-      <aside class="panel" id="panel">
-        <h2>Hover Translation</h2>
-        <p class="hint">Hover any word in the page to see context-aware translations.</p>
-
-        <div class="group">
-          <h3>Word</h3>
-          <p id="wordText">—</p>
-        </div>
-
-        <div class="group">
-          <h3>Root / lemma</h3>
-          <p id="rootText">—</p>
-        </div>
-
-        <div class="group">
-          <h3>Ranked translations</h3>
-          <ol id="translations"></ol>
-        </div>
-
-        <div class="group">
-          <h3>Sentence</h3>
-          <p id="sentenceText">—</p>
-        </div>
-
-        <div class="group">
-          <h3>Sentence translation</h3>
-          <p id="sentenceTranslationText">—</p>
-        </div>
-
-        <div class="group">
-          <h3>Providers used</h3>
-          <p id="providers">—</p>
-        </div>
-      </aside>
     </main>
 
     <script type="module" src="app.js"></script>
