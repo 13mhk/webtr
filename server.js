@@ -111,7 +111,7 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
   return { translated, sourceLang: 'auto', candidates };
 }
 
-function rewriteAttributeUrls(html, baseUrl) {
+function rewriteAttributeUrls(html, baseUrl, proxyOrigin) {
   const shouldSkipUrl = (value) => {
     if (!value) return true;
     const lowered = value.trim().toLowerCase();
@@ -138,7 +138,7 @@ function rewriteAttributeUrls(html, baseUrl) {
   const toProxyUrl = (value) => {
     const absolute = toAbsolute(value);
     if (absolute === value && shouldSkipUrl(value)) return value;
-    return `/proxy?url=${encodeURIComponent(absolute)}`;
+    return `${proxyOrigin}/proxy?url=${encodeURIComponent(absolute)}`;
   };
 
   const rewriteSrc = (value) => {
@@ -446,11 +446,13 @@ function injectWebtrOverlay(html, baseUrl) {
   return `${html}${overlay}`;
 }
 
-function injectNavigationGuard(html, baseUrl) {
+function injectNavigationGuard(html, baseUrl, proxyOrigin) {
   const script = `
 <script id="webtr-nav-guard">
 (() => {
   const skipSchemes = ['#', 'javascript:', 'data:', 'mailto:', 'tel:', 'blob:', 'about:'];
+
+  const PROXY_ORIGIN = ${JSON.stringify(proxyOrigin)};
 
   const shouldSkip = (value) => {
     if (!value) return true;
@@ -458,11 +460,24 @@ function injectNavigationGuard(html, baseUrl) {
     return skipSchemes.some((item) => lowered.startsWith(item));
   };
 
+  const isAlreadyProxyUrl = (value) => {
+    if (!value) return false;
+    try {
+      const parsed = new URL(value, window.location.href);
+      return parsed.origin === PROXY_ORIGIN && parsed.pathname === '/proxy' && parsed.searchParams.has('url');
+    } catch {
+      return false;
+    }
+  };
+
   const toProxyUrl = (value) => {
     if (shouldSkip(value)) return value;
+    if (isAlreadyProxyUrl(value)) {
+      return new URL(value, window.location.href).toString();
+    }
     try {
       const absolute = new URL(value, ${JSON.stringify(baseUrl)}).toString();
-      return '/proxy?url=' + encodeURIComponent(absolute);
+      return PROXY_ORIGIN + '/proxy?url=' + encodeURIComponent(absolute);
     } catch {
       return value;
     }
@@ -534,6 +549,9 @@ function injectNavigationGuard(html, baseUrl) {
 async function handleProxy(req, res, parsedUrl) {
   const target = parsedUrl.searchParams.get('url');
   if (!target) return send(res, 400, 'Missing ?url parameter');
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || 'http';
+  const proxyOrigin = `${protocol}://${req.headers.host}`;
 
   let validated;
   try {
@@ -590,8 +608,8 @@ async function handleProxy(req, res, parsedUrl) {
     const baseUrl = upstream.url || validated.toString();
     let html = await upstream.text();
     html = injectBase(html, baseUrl);
-    html = rewriteAttributeUrls(html, baseUrl);
-    html = injectNavigationGuard(html, baseUrl);
+    html = rewriteAttributeUrls(html, baseUrl, proxyOrigin);
+    html = injectNavigationGuard(html, baseUrl, proxyOrigin);
     html = injectWebtrOverlay(html, baseUrl);
 
     send(res, 200, html, 'text/html; charset=utf-8');
