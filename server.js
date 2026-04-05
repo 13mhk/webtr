@@ -165,9 +165,290 @@ function injectBase(html, baseUrl) {
   return html.replace(/<head([^>]*)>/i, `<head$1><base href="${baseUrl}">`);
 }
 
-function injectLinkNavigationGuard(html, baseUrl) {
+function injectWebtrOverlay(html, baseUrl) {
+  const overlay = `
+<style id="webtr-style">
+  #webtr-panel {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 2147483647;
+    width: 360px;
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    background: #f9fbff;
+    border: 1px solid #d9dce4;
+    border-radius: 12px;
+    box-shadow: 0 14px 35px rgba(21, 36, 64, 0.22);
+    padding: 0.85rem;
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #111;
+    line-height: 1.35;
+    font-size: 14px;
+  }
+  #webtr-panel h2 { margin: 0; font-size: 16px; }
+  #webtr-panel h3 { margin: 0; font-size: 13px; color: #273247; }
+  #webtr-panel p { margin: 0.35rem 0; }
+  #webtr-toggle {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 2147483647;
+    border: 0;
+    border-radius: 999px;
+    background: #315efb;
+    color: #fff;
+    padding: 0.45rem 0.7rem;
+    font: 600 13px/1 Inter, system-ui, sans-serif;
+    cursor: pointer;
+    display: none;
+  }
+  #webtr-panel.webtr-collapsed { display: none; }
+  #webtr-panel .webtr-row { margin-top: 0.8rem; border-top: 1px solid #dde3f1; padding-top: 0.7rem; }
+  #webtr-panel .webtr-url-form { display: flex; gap: 0.35rem; margin-top: 0.65rem; }
+  #webtr-panel .webtr-url-form input {
+    flex: 1; min-width: 0; border: 1px solid #c9ced9; border-radius: 8px; padding: 0.45rem 0.5rem;
+  }
+  #webtr-panel .webtr-url-form button,
+  #webtr-panel .webtr-button {
+    border: 0; border-radius: 8px; background: #315efb; color: #fff; padding: 0.45rem 0.65rem; cursor: pointer;
+  }
+  #webtr-panel .webtr-header { display: flex; align-items: center; justify-content: space-between; gap: 0.45rem; }
+  #webtr-translations { margin: 0.45rem 0 0; padding-left: 1.2rem; }
+  .webtr-token-highlight { outline: 2px solid #ffce52 !important; background: rgba(255, 206, 82, 0.24) !important; }
+</style>
+<button id="webtr-toggle" type="button">Show webtr</button>
+<aside id="webtr-panel" aria-live="polite">
+  <div class="webtr-header">
+    <h2>webtr</h2>
+    <button class="webtr-button" id="webtr-hide" type="button">Hide</button>
+  </div>
+  <p>Hover words to translate in context.</p>
+  <form id="webtr-url-form" class="webtr-url-form">
+    <input id="webtr-url-input" type="url" placeholder="Open URL" required />
+    <button type="submit">Open</button>
+  </form>
+
+  <div class="webtr-row"><h3>Word</h3><p id="webtr-word">—</p></div>
+  <div class="webtr-row"><h3>Root / lemma</h3><p id="webtr-root">—</p></div>
+  <div class="webtr-row"><h3>Ranked translations</h3><ol id="webtr-translations"></ol></div>
+  <div class="webtr-row"><h3>Sentence</h3><p id="webtr-sentence">—</p></div>
+  <div class="webtr-row"><h3>Sentence translation</h3><p id="webtr-sentence-translation">—</p></div>
+  <div class="webtr-row"><h3>Providers used</h3><p id="webtr-providers">—</p></div>
+</aside>
+<script id="webtr-script">
+(() => {
+  const SOURCE_URL = ${JSON.stringify(baseUrl)};
+  const panel = document.getElementById('webtr-panel');
+  const toggle = document.getElementById('webtr-toggle');
+  const hideButton = document.getElementById('webtr-hide');
+  const urlForm = document.getElementById('webtr-url-form');
+  const urlInput = document.getElementById('webtr-url-input');
+
+  const wordText = document.getElementById('webtr-word');
+  const rootText = document.getElementById('webtr-root');
+  const translationsEl = document.getElementById('webtr-translations');
+  const sentenceText = document.getElementById('webtr-sentence');
+  const sentenceTranslationText = document.getElementById('webtr-sentence-translation');
+  const providersText = document.getElementById('webtr-providers');
+
+  let hoverTimer = null;
+  let lastPayloadKey = '';
+  let currentHighlight = null;
+
+  const normalizeInputUrl = (value) => {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    if (/^https?:\\/\\//i.test(trimmed)) return trimmed;
+    return 'https://' + trimmed;
+  };
+
+  const clearPanel = () => {
+    wordText.textContent = '—';
+    rootText.textContent = '—';
+    sentenceText.textContent = '—';
+    sentenceTranslationText.textContent = '—';
+    providersText.textContent = '—';
+    translationsEl.innerHTML = '';
+  };
+
+  const updatePanel = (data) => {
+    wordText.textContent = data.word || '—';
+    rootText.textContent = data.root || '—';
+    sentenceText.textContent = data.sentence || '—';
+    sentenceTranslationText.textContent = data.sentenceTranslation || '—';
+
+    translationsEl.innerHTML = '';
+    if (Array.isArray(data.translations) && data.translations.length > 0) {
+      for (const item of data.translations) {
+        const li = document.createElement('li');
+        li.textContent = item.text + ' (' + Math.round(item.score * 100) + '%, ' + item.source + ')';
+        translationsEl.appendChild(li);
+      }
+    } else {
+      const li = document.createElement('li');
+      li.textContent = 'No ranked suggestions available.';
+      translationsEl.appendChild(li);
+    }
+
+    const used = [];
+    if (data.providersUsed?.google) used.push('Google Translate (unofficial endpoint)');
+    if (data.providersUsed?.mymemory) used.push('MyMemory');
+    providersText.textContent = used.join(' + ') || '—';
+  };
+
+  const removeHighlight = () => {
+    if (currentHighlight) {
+      currentHighlight.classList.remove('webtr-token-highlight');
+      currentHighlight = null;
+    }
+  };
+
+  const getSentenceAround = (container, offset) => {
+    const text = container.textContent || '';
+    const endMarks = /[.!?。！？]/;
+
+    let start = offset;
+    while (start > 0 && !endMarks.test(text[start - 1])) start -= 1;
+
+    let end = offset;
+    while (end < text.length && !endMarks.test(text[end])) end += 1;
+    if (end < text.length) end += 1;
+
+    return text.slice(start, end).trim();
+  };
+
+  const getHoveredWordInfo = (event) => {
+    const range = document.caretRangeFromPoint
+      ? document.caretRangeFromPoint(event.clientX, event.clientY)
+      : document.caretPositionFromPoint
+        ? (() => {
+            const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
+            if (!pos) return null;
+            const r = document.createRange();
+            r.setStart(pos.offsetNode, pos.offset);
+            r.collapse(true);
+            return r;
+          })()
+        : null;
+
+    if (!range || !range.startContainer || range.startContainer.nodeType !== Node.TEXT_NODE) {
+      return null;
+    }
+
+    const node = range.startContainer;
+    const text = node.textContent || '';
+    if (!text.trim()) return null;
+
+    const index = Math.max(0, Math.min(range.startOffset, text.length - 1));
+    const isWordChar = (char) => /[\\p{L}\\p{N}\\-']/u.test(char);
+
+    if (!isWordChar(text[index]) && !isWordChar(text[index - 1] || '')) {
+      return null;
+    }
+
+    let start = index;
+    while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+
+    let end = index;
+    while (end < text.length && isWordChar(text[end])) end += 1;
+
+    const word = text.slice(start, end).trim();
+    if (!word) return null;
+
+    const wrapper = document.createElement('span');
+    wrapper.className = 'webtr-token-highlight';
+
+    const highlightRange = document.createRange();
+    highlightRange.setStart(node, start);
+    highlightRange.setEnd(node, end);
+
+    removeHighlight();
+
+    try {
+      highlightRange.surroundContents(wrapper);
+      currentHighlight = wrapper;
+    } catch {
+      // Skip highlighting if range cannot be wrapped.
+    }
+
+    const sentence = getSentenceAround(node, start);
+    return { word, sentence: sentence || text.trim().slice(0, 220) };
+  };
+
+  const requestTranslation = async (word, sentence) => {
+    const payloadKey = word + '||' + sentence + '||en';
+    if (payloadKey === lastPayloadKey) return;
+    lastPayloadKey = payloadKey;
+
+    const response = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ word, sentence, targetLang: 'en' })
+    });
+
+    if (!response.ok) {
+      throw new Error('Translation API error (' + response.status + ')');
+    }
+
+    const data = await response.json();
+    updatePanel(data);
+  };
+
+  document.addEventListener('mousemove', (event) => {
+    const target = event.target;
+    if (panel.contains(target) || target === toggle) return;
+
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(async () => {
+      const info = getHoveredWordInfo(event);
+      if (!info) return;
+
+      try {
+        await requestTranslation(info.word, info.sentence);
+      } catch (error) {
+        providersText.textContent = 'Translation failed: ' + error.message;
+      }
+    }, 250);
+  }, true);
+
+  document.addEventListener('mouseleave', () => {
+    removeHighlight();
+  });
+
+  const toProxyUrl = (value) => '/proxy?url=' + encodeURIComponent(value);
+
+  urlForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const target = normalizeInputUrl(urlInput.value || '');
+    if (!target) return;
+    window.location.assign(toProxyUrl(target));
+  });
+
+  urlInput.value = SOURCE_URL;
+  clearPanel();
+
+  hideButton.addEventListener('click', () => {
+    panel.classList.add('webtr-collapsed');
+    toggle.style.display = 'inline-flex';
+  });
+
+  toggle.addEventListener('click', () => {
+    panel.classList.remove('webtr-collapsed');
+    toggle.style.display = 'none';
+  });
+})();
+</script>`;
+
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${overlay}</body>`);
+  }
+  return `${html}${overlay}`;
+}
+
+function injectNavigationGuard(html, baseUrl) {
   const script = `
-<script>
+<script id="webtr-nav-guard">
 (() => {
   const skipSchemes = ['#', 'javascript:', 'data:', 'mailto:', 'tel:', 'blob:', 'about:'];
 
@@ -189,7 +470,7 @@ function injectLinkNavigationGuard(html, baseUrl) {
 
   const navigate = (value, replace = false) => {
     const next = toProxyUrl(value);
-    if (!next || next === value && shouldSkip(value)) return;
+    if (!next || (next === value && shouldSkip(value))) return;
     if (replace) {
       window.location.replace(next);
       return;
@@ -202,7 +483,7 @@ function injectLinkNavigationGuard(html, baseUrl) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
     const link = event.target?.closest?.('a[href], area[href]');
-    if (!link) return;
+    if (!link || link.id?.startsWith('webtr-')) return;
 
     const href = link.getAttribute('href');
     if (shouldSkip(href)) return;
@@ -211,19 +492,10 @@ function injectLinkNavigationGuard(html, baseUrl) {
     navigate(href);
   }, true);
 
-  document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || event.key !== 'Enter') return;
-    const active = document.activeElement;
-    if (!active || active.tagName !== 'A') return;
-    const href = active.getAttribute('href');
-    if (shouldSkip(href)) return;
-    event.preventDefault();
-    navigate(href);
-  }, true);
-
   document.addEventListener('submit', (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
+    if (form.id === 'webtr-url-form') return;
 
     const action = form.getAttribute('action') || window.location.href;
     const method = (form.getAttribute('method') || 'get').toLowerCase();
@@ -247,6 +519,7 @@ function injectLinkNavigationGuard(html, baseUrl) {
       return original.call(this, state, title, url);
     };
   };
+
   wrapHistory('pushState');
   wrapHistory('replaceState');
 })();
@@ -290,6 +563,7 @@ async function handleProxy(req, res, parsedUrl) {
       'user-agent': req.headers['user-agent'] || 'Mozilla/5.0 (webtr proxy)',
       'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9'
     };
+
     if (hasBody && req.headers['content-type']) {
       upstreamHeaders['content-type'] = req.headers['content-type'];
     }
@@ -317,7 +591,8 @@ async function handleProxy(req, res, parsedUrl) {
     let html = await upstream.text();
     html = injectBase(html, baseUrl);
     html = rewriteAttributeUrls(html, baseUrl);
-    html = injectLinkNavigationGuard(html, baseUrl);
+    html = injectNavigationGuard(html, baseUrl);
+    html = injectWebtrOverlay(html, baseUrl);
 
     send(res, 200, html, 'text/html; charset=utf-8');
   } catch (error) {
@@ -362,6 +637,7 @@ async function handleTranslate(req, res) {
           }
         }
       }
+
       if (wordMemory.status === 'fulfilled') {
         allCandidates.push(...wordMemory.value.candidates);
       }
