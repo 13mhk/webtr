@@ -297,13 +297,6 @@ function injectWebtrOverlay(html, baseUrl) {
     providersText.textContent = used.join(' + ') || '—';
   };
 
-  const removeHighlight = () => {
-    if (currentHighlight) {
-      currentHighlight.classList.remove('webtr-token-highlight');
-      currentHighlight = null;
-    }
-  };
-
   const getSentenceAround = (container, offset) => {
     const text = container.textContent || '';
     const endMarks = /[.!?。！？]/;
@@ -356,22 +349,6 @@ function injectWebtrOverlay(html, baseUrl) {
     const word = text.slice(start, end).trim();
     if (!word) return null;
 
-    const wrapper = document.createElement('span');
-    wrapper.className = 'webtr-token-highlight';
-
-    const highlightRange = document.createRange();
-    highlightRange.setStart(node, start);
-    highlightRange.setEnd(node, end);
-
-    removeHighlight();
-
-    try {
-      highlightRange.surroundContents(wrapper);
-      currentHighlight = wrapper;
-    } catch {
-      // Skip highlighting if range cannot be wrapped.
-    }
-
     const sentence = getSentenceAround(node, start);
     return { word, sentence: sentence || text.trim().slice(0, 220) };
   };
@@ -397,7 +374,12 @@ function injectWebtrOverlay(html, baseUrl) {
 
   document.addEventListener('mousemove', (event) => {
     const target = event.target;
+    if (!(target instanceof Node)) return;
     if (panel.contains(target) || target === toggle) return;
+    if (target instanceof HTMLElement) {
+      if (target.closest('#webtr-panel')) return;
+      if (target.closest('input, textarea, [contenteditable="true"]')) return;
+    }
 
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = setTimeout(async () => {
@@ -411,10 +393,6 @@ function injectWebtrOverlay(html, baseUrl) {
       }
     }, 250);
   }, true);
-
-  document.addEventListener('mouseleave', () => {
-    removeHighlight();
-  });
 
   const toProxyUrl = (value) => '/proxy?url=' + encodeURIComponent(value);
 
@@ -522,6 +500,28 @@ function injectNavigationGuard(html, baseUrl) {
 
   wrapHistory('pushState');
   wrapHistory('replaceState');
+
+  const patchLocationMethod = (methodName) => {
+    const original = Location.prototype[methodName];
+    if (typeof original !== 'function') return;
+    Location.prototype[methodName] = function patchedLocation(url) {
+      if (typeof url === 'string' && !shouldSkip(url)) {
+        return original.call(this, toProxyUrl(url));
+      }
+      return original.call(this, url);
+    };
+  };
+
+  patchLocationMethod('assign');
+  patchLocationMethod('replace');
+
+  const originalOpen = window.open;
+  window.open = function patchedOpen(url, ...rest) {
+    if (typeof url === 'string' && !shouldSkip(url)) {
+      return originalOpen.call(window, toProxyUrl(url), ...rest);
+    }
+    return originalOpen.call(window, url, ...rest);
+  };
 })();
 </script>`;
 
