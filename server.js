@@ -254,6 +254,7 @@ function injectWebtrOverlay(html, baseUrl) {
 
   let hoverTimer = null;
   let lastPayloadKey = '';
+  let currentHighlight = null;
 
   const normalizeInputUrl = (value) => {
     const trimmed = value.trim();
