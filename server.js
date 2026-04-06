@@ -253,14 +253,16 @@ Rules:
     data?.output?.[0]?.content?.find((item) => item.type === 'output_text')?.text ||
     '{}';
   const parsed = JSON.parse(raw);
+  const asCleanString = (value) => (typeof value === 'string' ? value.trim() : '');
 
   const alternatives = Array.isArray(parsed?.alternatives) ? parsed.alternatives : [];
-  const wordTranslation = typeof parsed?.wordTranslation === 'string' ? parsed.wordTranslation : '';
+  const wordTranslation = asCleanString(parsed?.wordTranslation);
   const candidates = [];
   if (wordTranslation) candidates.push({ text: wordTranslation, score: 1, source: 'chatgpt' });
   for (const alt of alternatives.slice(0, 6)) {
-    if (typeof alt === 'string' && alt.trim()) {
-      candidates.push({ text: alt.trim(), score: 0.92, source: 'chatgpt' });
+    const cleanAlt = asCleanString(alt);
+    if (cleanAlt) {
+      candidates.push({ text: cleanAlt, score: 0.92, source: 'chatgpt' });
     }
   }
 
@@ -268,24 +270,25 @@ Rules:
     ? parsed.compoundRoots
       .filter((item) => item && typeof item.part === 'string')
       .map((item) => ({
-        part: item.part,
+        part: asCleanString(item.part),
         translations: Array.isArray(item.translations)
           ? item.translations.filter((value) => typeof value === 'string').slice(0, 3)
           : []
       }))
+      .filter((item) => item.part)
     : [];
 
   return {
-    detectedLanguage: typeof parsed?.detectedLanguage === 'string' ? parsed.detectedLanguage : 'auto',
+    detectedLanguage: asCleanString(parsed?.detectedLanguage) || 'auto',
     translated: wordTranslation,
     candidates,
-    root: typeof parsed?.root === 'string' ? parsed.root : '',
+    root: asCleanString(parsed?.root),
     rootTranslations: Array.isArray(parsed?.rootTranslations)
       ? parsed.rootTranslations.filter((value) => typeof value === 'string').slice(0, 4)
       : [],
     compoundRoots,
-    sentenceTranslation: typeof parsed?.sentenceTranslation === 'string' ? parsed.sentenceTranslation : '',
-    contextMeaning: typeof parsed?.contextMeaning === 'string' ? parsed.contextMeaning : ''
+    sentenceTranslation: asCleanString(parsed?.sentenceTranslation),
+    contextMeaning: asCleanString(parsed?.contextMeaning)
   };
 }
 
@@ -875,7 +878,10 @@ async function handleTranslate(req, res) {
       let wordMemory = { status: 'rejected' };
 
       if (chatgptResult) {
-        allCandidates.push(...chatgptResult.candidates.map((item) => ({ ...item, score: Math.max(1.1, item.score) })));
+        allCandidates.push(...chatgptResult.candidates.map((item) => ({
+          ...item,
+          score: Math.max(1.1, Number(item.score) || 0)
+        })));
       }
 
       if (wordGoogle.status === 'fulfilled') {
@@ -921,8 +927,10 @@ async function handleTranslate(req, res) {
       }
 
       const rankedTranslations = dedupeAndRank(allCandidates);
-      const sentenceTranslation = chatgptResult?.sentenceTranslation || (sentenceGoogle.status === 'fulfilled' ? sentenceGoogle.value.translated : '');
-      const contextMeaning = chatgptResult?.contextMeaning || pickContextMeaning(rankedTranslations, sentenceTranslation);
+      const chatgptSentenceTranslation = (chatgptResult?.sentenceTranslation || '').trim();
+      const googleSentenceTranslation = sentenceGoogle.status === 'fulfilled' ? sentenceGoogle.value.translated : '';
+      const sentenceTranslation = chatgptSentenceTranslation || googleSentenceTranslation;
+      const contextMeaning = (chatgptResult?.contextMeaning || '').trim() || pickContextMeaning(rankedTranslations, sentenceTranslation);
       const response = {
         word,
         root,
