@@ -182,6 +182,116 @@ async function myMemoryTranslate(text, sourceLang, targetLang) {
   return { translated, sourceLang: 'auto', candidates };
 }
 
+async function chatgptTranslate(word, sentence, targetLang) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
+
+  const payload = {
+    model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text: 'You are a translation and morphology assistant. Return strict JSON only.'
+          }
+        ]
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text:
+`Analyze this word in context and translate to ${targetLang}.
+
+Word: "${word}"
+Sentence: "${sentence}"
+
+Return JSON with this schema exactly:
+{
+  "detectedLanguage": "string",
+  "wordTranslation": "string",
+  "alternatives": ["string"],
+  "root": "string",
+  "rootTranslations": ["string"],
+  "compoundRoots": [{"part":"string","translations":["string"]}],
+  "sentenceTranslation": "string",
+  "contextMeaning": "string"
+}
+Rules:
+- Keep alternatives concise and distinct.
+- If uncertain, use best guess and keep fields present.
+- root should be the likely lemma/base form.
+- compoundRoots can be empty array if none.`
+          }
+        ]
+      }
+    ],
+    text: {
+      format: {
+        type: 'json_object'
+      }
+    }
+  };
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) throw new Error(`ChatGPT translation failed (${response.status})`);
+  const data = await response.json();
+
+  const raw =
+    data?.output_text ||
+    data?.output?.[0]?.content?.find((item) => item.type === 'output_text')?.text ||
+    '{}';
+  const parsed = JSON.parse(raw);
+  const asCleanString = (value) => (typeof value === 'string' ? value.trim() : '');
+
+  const alternatives = Array.isArray(parsed?.alternatives) ? parsed.alternatives : [];
+  const wordTranslation = asCleanString(parsed?.wordTranslation);
+  const candidates = [];
+  if (wordTranslation) candidates.push({ text: wordTranslation, score: 1, source: 'chatgpt' });
+  for (const alt of alternatives.slice(0, 6)) {
+    const cleanAlt = asCleanString(alt);
+    if (cleanAlt) {
+      candidates.push({ text: cleanAlt, score: 0.92, source: 'chatgpt' });
+    }
+  }
+
+  const compoundRoots = Array.isArray(parsed?.compoundRoots)
+    ? parsed.compoundRoots
+      .filter((item) => item && typeof item.part === 'string')
+      .map((item) => ({
+        part: asCleanString(item.part),
+        translations: Array.isArray(item.translations)
+          ? item.translations.filter((value) => typeof value === 'string').slice(0, 3)
+          : []
+      }))
+      .filter((item) => item.part)
+    : [];
+
+  return {
+    detectedLanguage: asCleanString(parsed?.detectedLanguage) || 'auto',
+    translated: wordTranslation,
+    candidates,
+    root: asCleanString(parsed?.root),
+    rootTranslations: Array.isArray(parsed?.rootTranslations)
+      ? parsed.rootTranslations.filter((value) => typeof value === 'string').slice(0, 4)
+      : [],
+    compoundRoots,
+    sentenceTranslation: asCleanString(parsed?.sentenceTranslation),
+    contextMeaning: asCleanString(parsed?.contextMeaning)
+  };
+}
+
 function rewriteAttributeUrls(html, baseUrl, proxyOrigin) {
   const shouldSkipUrl = (value) => {
     if (!value) return true;
@@ -385,6 +495,7 @@ function injectWebtrOverlay(html, baseUrl) {
     }
 
     const used = [];
+    if (data.providersUsed?.chatgpt) used.push('ChatGPT');
     if (data.providersUsed?.google) used.push('Google Translate (unofficial endpoint)');
     if (data.providersUsed?.mymemory) used.push('MyMemory');
     if (data.providersUsed?.contextualInference) used.push('webtr contextual inference');
@@ -740,8 +851,21 @@ async function handleTranslate(req, res) {
       const targetLang = 'en';
       if (!word || !sentence) return send(res, 400, JSON.stringify({ error: 'word and sentence are required' }), 'application/json');
 
-      const root = guessRoot(word);
-      const compoundParts = extractFinnishCompoundParts(word);
+      const heuristicRoot = guessRoot(word);
+      const heuristicCompoundParts = extractFinnishCompoundParts(word);
+
+      const chatgptResult = await (async () => {
+        try {
+          return await chatgptTranslate(word, sentence, targetLang);
+        } catch {
+          return null;
+        }
+      })();
+
+      const root = chatgptResult?.root || heuristicRoot;
+      const compoundParts = Array.isArray(chatgptResult?.compoundRoots) && chatgptResult.compoundRoots.length > 0
+        ? []
+        : heuristicCompoundParts;
 
       const [wordGoogle, sentenceGoogle, rootGoogle] = await Promise.allSettled([
         googleTranslate(word, targetLang),
@@ -750,8 +874,15 @@ async function handleTranslate(req, res) {
       ]);
 
       const allCandidates = [];
-      let detectedLanguage = 'auto';
+      let detectedLanguage = chatgptResult?.detectedLanguage || 'auto';
       let wordMemory = { status: 'rejected' };
+
+      if (chatgptResult) {
+        allCandidates.push(...chatgptResult.candidates.map((item) => ({
+          ...item,
+          score: Math.max(1.1, Number(item.score) || 0)
+        })));
+      }
 
       if (wordGoogle.status === 'fulfilled') {
         allCandidates.push(...wordGoogle.value.candidates);
@@ -773,30 +904,37 @@ async function handleTranslate(req, res) {
         allCandidates.push(...wordMemory.value.candidates);
       }
 
-      const rootTranslations = rootGoogle.status === 'fulfilled'
-        ? dedupeAndRank(rootGoogle.value.candidates).map((item) => item.text)
-        : [];
+      const rootTranslations = [
+        ...(chatgptResult?.rootTranslations || []),
+        ...(rootGoogle.status === 'fulfilled'
+          ? dedupeAndRank(rootGoogle.value.candidates).map((item) => item.text)
+          : [])
+      ].filter(Boolean).slice(0, 4);
 
-      const compoundRoots = [];
-      for (const part of compoundParts) {
-        try {
-          const translatedPart = await googleTranslate(part, targetLang);
-          compoundRoots.push({
-            part,
-            translations: dedupeAndRank(translatedPart.candidates).map((item) => item.text).slice(0, 3)
-          });
-        } catch {
-          compoundRoots.push({ part, translations: [] });
+      const compoundRoots = [...(chatgptResult?.compoundRoots || [])];
+      if (compoundRoots.length === 0) {
+        for (const part of compoundParts) {
+          try {
+            const translatedPart = await googleTranslate(part, targetLang);
+            compoundRoots.push({
+              part,
+              translations: dedupeAndRank(translatedPart.candidates).map((item) => item.text).slice(0, 3)
+            });
+          } catch {
+            compoundRoots.push({ part, translations: [] });
+          }
         }
       }
 
       const rankedTranslations = dedupeAndRank(allCandidates);
-      const sentenceTranslation = sentenceGoogle.status === 'fulfilled' ? sentenceGoogle.value.translated : '';
-      const contextMeaning = pickContextMeaning(rankedTranslations, sentenceTranslation);
+      const chatgptSentenceTranslation = (chatgptResult?.sentenceTranslation || '').trim();
+      const googleSentenceTranslation = sentenceGoogle.status === 'fulfilled' ? sentenceGoogle.value.translated : '';
+      const sentenceTranslation = chatgptSentenceTranslation || googleSentenceTranslation;
+      const contextMeaning = (chatgptResult?.contextMeaning || '').trim() || pickContextMeaning(rankedTranslations, sentenceTranslation);
       const response = {
         word,
         root,
-        rootTranslations: rootTranslations.slice(0, 4),
+        rootTranslations,
         compoundRoots,
         contextMeaning,
         detectedLanguage,
@@ -804,6 +942,7 @@ async function handleTranslate(req, res) {
         sentence,
         sentenceTranslation,
         providersUsed: {
+          chatgpt: Boolean(chatgptResult),
           google: wordGoogle.status === 'fulfilled' || sentenceGoogle.status === 'fulfilled',
           mymemory: wordMemory.status === 'fulfilled',
           contextualInference: true
