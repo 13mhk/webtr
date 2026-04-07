@@ -16,97 +16,6 @@ function send(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.end(body);
 }
 
-function normalizeWord(raw) {
-  return raw
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
-    .toLowerCase();
-}
-
-function guessRoot(word) {
-  const w = normalizeWord(word);
-  if (!w) return '';
-  const finnishPossessive = ['ni', 'si', 'mme', 'nne', 'nsa', 'nsä'];
-  for (const suffix of finnishPossessive) {
-    if (w.length > suffix.length + 4 && w.endsWith(suffix)) {
-      return w.slice(0, -suffix.length);
-    }
-  }
-  const finnishEndings = [
-    'issakin', 'issäkin', 'ssakin', 'ssäkin', 'istakin', 'istäkin',
-    'ssakaan', 'ssäkään', 'stakaan', 'stakään', 'llakin', 'lläkin',
-    'ltakin', 'ltäkin', 'llekin', 'issaan', 'issään', 'ssaan', 'ssään',
-    'istaan', 'istään', 'staan', 'stään', 'llaan', 'llään', 'ltaan', 'ltään',
-    'ssa', 'ssä', 'sta', 'stä', 'lla', 'llä', 'lta', 'ltä', 'lle',
-    'na', 'nä', 'ksi', 'tta', 'ttä', 'ineen'
-  ];
-  for (const suffix of finnishEndings) {
-    if (w.length > suffix.length + 4 && w.endsWith(suffix)) {
-      return w.slice(0, -suffix.length);
-    }
-  }
-  if (w.length > 4 && w.endsWith('n')) {
-    return w.slice(0, -1);
-  }
-  if (w.length > 5 && w.endsWith('t')) {
-    return w.slice(0, -1);
-  }
-  const suffixes = ['ing', 'ed', 'es', 's', 'mente', 'tion', 'ions'];
-  for (const suffix of suffixes) {
-    if (w.length > suffix.length + 2 && w.endsWith(suffix)) {
-      return w.slice(0, -suffix.length);
-    }
-  }
-  return w;
-}
-
-function extractFinnishCompoundParts(word) {
-  const normalized = normalizeWord(word);
-  if (!normalized) return [];
-  if (normalized.includes('-')) {
-    return normalized.split('-').map((part) => part.trim()).filter((part) => part.length > 1);
-  }
-  const headCandidates = [
-    'toimittaja', 'johtaja', 'kirjailija', 'opettaja', 'ministeri', 'poliisi', 'kaupunki', 'valtio',
-    'kieli', 'keskus', 'asema', 'alue', 'talo', 'koulu', 'päivä', 'ilta', 'aika', 'ryhmä',
-    'järjestö', 'toimisto', 'työ', 'markkina', 'palvelu', 'ohjelma', 'sivu', 'uutinen'
-  ];
-
-  for (const head of headCandidates) {
-    if (!normalized.endsWith(head)) continue;
-    const prefix = normalized.slice(0, -head.length);
-    if (prefix.length < 3) continue;
-
-    const cleanedPrefix = prefix.replace(/[aeouyäö]$/, '');
-    const first = cleanedPrefix.length >= 3 ? cleanedPrefix : prefix;
-    if (first.length >= 3) {
-      return [first, head];
-    }
-  }
-
-  const connectors = new Set(['a', 'ä', 'e', 'i', 'o', 'ö', 'u', 'y']);
-  for (let i = 4; i <= normalized.length - 4; i += 1) {
-    const left = normalized.slice(0, i);
-    const right = normalized.slice(i);
-    if (right.length < 4 || left.length < 3) continue;
-    const connectorBoost = connectors.has(left[left.length - 1]) ? 1 : 0;
-    if (connectorBoost && /^[\p{L}]{4,}$/u.test(right)) {
-      return [left.replace(/[aeouyäö]$/, ''), right].filter((part) => part.length > 2);
-    }
-  }
-
-  return [];
-}
-
-function pickContextMeaning(translations, sentenceTranslation) {
-  if (!Array.isArray(translations) || translations.length === 0) return '';
-  const sentenceLower = String(sentenceTranslation || '').toLowerCase();
-  if (!sentenceLower) return translations[0].text;
-  const exactMatch = translations.find((item) => sentenceLower.includes(String(item.text).toLowerCase()));
-  return (exactMatch || translations[0]).text;
-}
-
 function dedupeAndRank(candidates) {
   const map = new Map();
   for (const item of candidates) {
@@ -148,148 +57,6 @@ async function googleTranslate(text, targetLang) {
   if (translated) candidates.unshift({ text: translated, score: 1, source: 'google' });
 
   return { translated, sourceLang, candidates };
-}
-
-function normalizeLangCode(language) {
-  if (!language) return '';
-  const lowered = String(language).toLowerCase();
-  if (lowered.startsWith('zh')) return 'zh';
-  return lowered.split('-')[0];
-}
-
-async function myMemoryTranslate(text, sourceLang, targetLang) {
-  const url = new URL('https://api.mymemory.translated.net/get');
-  url.searchParams.set('q', text);
-  url.searchParams.set('langpair', `${sourceLang}|${targetLang}`);
-
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`MyMemory failed (${response.status})`);
-  const data = await response.json();
-
-  const translated = data?.responseData?.translatedText || '';
-  const candidates = [];
-  if (translated) {
-    candidates.push({ text: translated, score: Number(data?.responseData?.match || 0.7), source: 'mymemory' });
-  }
-  if (Array.isArray(data?.matches)) {
-    for (const match of data.matches.slice(0, 4)) {
-      if (match?.translation) {
-        candidates.push({ text: match.translation, score: Number(match.match || 0.5), source: 'mymemory' });
-      }
-    }
-  }
-
-  return { translated, sourceLang: 'auto', candidates };
-}
-
-async function chatgptTranslate(word, sentence, targetLang) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('Missing OPENAI_API_KEY');
-
-  const payload = {
-    model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-    input: [
-      {
-        role: 'system',
-        content: [
-          {
-            type: 'input_text',
-            text: 'You are a translation and morphology assistant. Return strict JSON only.'
-          }
-        ]
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text:
-`Analyze this word in context and translate to ${targetLang}.
-
-Word: "${word}"
-Sentence: "${sentence}"
-
-Return JSON with this schema exactly:
-{
-  "detectedLanguage": "string",
-  "wordTranslation": "string",
-  "alternatives": ["string"],
-  "root": "string",
-  "rootTranslations": ["string"],
-  "compoundRoots": [{"part":"string","translations":["string"]}],
-  "sentenceTranslation": "string",
-  "contextMeaning": "string"
-}
-Rules:
-- Keep alternatives concise and distinct.
-- If uncertain, use best guess and keep fields present.
-- root should be the likely lemma/base form.
-- compoundRoots can be empty array if none.`
-          }
-        ]
-      }
-    ],
-    text: {
-      format: {
-        type: 'json_object'
-      }
-    }
-  };
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) throw new Error(`ChatGPT translation failed (${response.status})`);
-  const data = await response.json();
-
-  const raw =
-    data?.output_text ||
-    data?.output?.[0]?.content?.find((item) => item.type === 'output_text')?.text ||
-    '{}';
-  const parsed = JSON.parse(raw);
-  const asCleanString = (value) => (typeof value === 'string' ? value.trim() : '');
-
-  const alternatives = Array.isArray(parsed?.alternatives) ? parsed.alternatives : [];
-  const wordTranslation = asCleanString(parsed?.wordTranslation);
-  const candidates = [];
-  if (wordTranslation) candidates.push({ text: wordTranslation, score: 1, source: 'chatgpt' });
-  for (const alt of alternatives.slice(0, 6)) {
-    const cleanAlt = asCleanString(alt);
-    if (cleanAlt) {
-      candidates.push({ text: cleanAlt, score: 0.92, source: 'chatgpt' });
-    }
-  }
-
-  const compoundRoots = Array.isArray(parsed?.compoundRoots)
-    ? parsed.compoundRoots
-      .filter((item) => item && typeof item.part === 'string')
-      .map((item) => ({
-        part: asCleanString(item.part),
-        translations: Array.isArray(item.translations)
-          ? item.translations.filter((value) => typeof value === 'string').slice(0, 3)
-          : []
-      }))
-      .filter((item) => item.part)
-    : [];
-
-  return {
-    detectedLanguage: asCleanString(parsed?.detectedLanguage) || 'auto',
-    translated: wordTranslation,
-    candidates,
-    root: asCleanString(parsed?.root),
-    rootTranslations: Array.isArray(parsed?.rootTranslations)
-      ? parsed.rootTranslations.filter((value) => typeof value === 'string').slice(0, 4)
-      : [],
-    compoundRoots,
-    sentenceTranslation: asCleanString(parsed?.sentenceTranslation),
-    contextMeaning: asCleanString(parsed?.contextMeaning)
-  };
 }
 
 function rewriteAttributeUrls(html, baseUrl, proxyOrigin) {
@@ -411,11 +178,7 @@ function injectWebtrOverlay(html, baseUrl) {
   </form>
 
   <div class="webtr-row"><h3>Word in context</h3><p id="webtr-word">—</p></div>
-  <div class="webtr-row"><h3>Root / lemma</h3><p id="webtr-root">—</p></div>
-  <div class="webtr-row"><h3>Compound roots</h3><ul id="webtr-compound-roots"><li>—</li></ul></div>
   <div class="webtr-row"><h3>Other translations</h3><ol id="webtr-translations"></ol></div>
-  <div class="webtr-row"><h3>Sentence</h3><p id="webtr-sentence">—</p></div>
-  <div class="webtr-row"><h3>Sentence translation</h3><p id="webtr-sentence-translation">—</p></div>
   <div class="webtr-row"><h3>Providers used</h3><p id="webtr-providers">—</p></div>
 </aside>
 <script id="webtr-script">
@@ -428,11 +191,7 @@ function injectWebtrOverlay(html, baseUrl) {
   const urlInput = document.getElementById('webtr-url-input');
 
   const wordText = document.getElementById('webtr-word');
-  const rootText = document.getElementById('webtr-root');
-  const compoundRootsEl = document.getElementById('webtr-compound-roots');
   const translationsEl = document.getElementById('webtr-translations');
-  const sentenceText = document.getElementById('webtr-sentence');
-  const sentenceTranslationText = document.getElementById('webtr-sentence-translation');
   const providersText = document.getElementById('webtr-providers');
 
   let hoverTimer = null;
@@ -448,38 +207,12 @@ function injectWebtrOverlay(html, baseUrl) {
 
   const clearPanel = () => {
     wordText.textContent = '—';
-    rootText.textContent = '—';
-    sentenceText.textContent = '—';
-    sentenceTranslationText.textContent = '—';
     providersText.textContent = '—';
     translationsEl.innerHTML = '';
-    compoundRootsEl.innerHTML = '<li>—</li>';
   };
 
   const updatePanel = (data) => {
-    const contextMeaning = data.contextMeaning || '—';
-    wordText.textContent = data.word ? data.word + ': ' + contextMeaning : '—';
-
-    const root = data.root || '—';
-    const rootMeanings = Array.isArray(data.rootTranslations) ? data.rootTranslations.join(', ') : '';
-    rootText.textContent = rootMeanings ? (root + ': ' + rootMeanings) : root;
-
-    compoundRootsEl.innerHTML = '';
-    if (Array.isArray(data.compoundRoots) && data.compoundRoots.length > 0) {
-      for (const item of data.compoundRoots) {
-        const li = document.createElement('li');
-        const meaning = Array.isArray(item.translations) ? item.translations.join(', ') : '';
-        li.textContent = meaning ? (item.part + ': ' + meaning) : item.part;
-        compoundRootsEl.appendChild(li);
-      }
-    } else {
-      const li = document.createElement('li');
-      li.textContent = 'Not detected';
-      compoundRootsEl.appendChild(li);
-    }
-
-    sentenceText.textContent = data.sentence || '—';
-    sentenceTranslationText.textContent = data.sentenceTranslation || '—';
+    wordText.textContent = data.word && data.wordTranslation ? data.word + ': ' + data.wordTranslation : '—';
 
     translationsEl.innerHTML = '';
     if (Array.isArray(data.translations) && data.translations.length > 0) {
@@ -495,10 +228,7 @@ function injectWebtrOverlay(html, baseUrl) {
     }
 
     const used = [];
-    if (data.providersUsed?.chatgpt) used.push('ChatGPT');
     if (data.providersUsed?.google) used.push('Google Translate (unofficial endpoint)');
-    if (data.providersUsed?.mymemory) used.push('MyMemory');
-    if (data.providersUsed?.contextualInference) used.push('webtr contextual inference');
     providersText.textContent = used.join(' + ') || '—';
   };
 
@@ -507,35 +237,6 @@ function injectWebtrOverlay(html, baseUrl) {
       currentHighlight.classList.remove('webtr-token-highlight');
       currentHighlight = null;
     }
-  };
-
-  const sentenceContainers = 'p, li, dd, dt, blockquote, figcaption, h1, h2, h3, h4, h5, h6, article, section, div, td, th, span';
-
-  const getSentenceAround = (node, startOffset) => {
-    const containerElement = node.parentElement?.closest(sentenceContainers) || node.parentElement || document.body;
-    const text = (containerElement?.innerText || containerElement?.textContent || '').replace(/\\s+/g, ' ').trim();
-    if (!text) return '';
-
-    let absoluteOffset = 0;
-    try {
-      const prefixRange = document.createRange();
-      prefixRange.selectNodeContents(containerElement);
-      prefixRange.setEnd(node, Math.max(0, startOffset));
-      absoluteOffset = (prefixRange.toString() || '').length;
-    } catch {
-      absoluteOffset = Math.max(0, startOffset);
-    }
-
-    const endMarks = /[.!?。！？]/;
-
-    let start = Math.min(absoluteOffset, text.length);
-    while (start > 0 && !endMarks.test(text[start - 1])) start -= 1;
-
-    let end = Math.min(absoluteOffset, text.length);
-    while (end < text.length && !endMarks.test(text[end])) end += 1;
-    if (end < text.length) end += 1;
-
-    return text.slice(start, end).trim();
   };
 
   const getHoveredWordInfo = (event) => {
@@ -592,19 +293,18 @@ function injectWebtrOverlay(html, baseUrl) {
       // Skip highlighting if range cannot be wrapped.
     }
 
-    const sentence = getSentenceAround(node, start);
-    return { word, sentence: sentence || text.trim().slice(0, 220) };
+    return { word };
   };
 
-  const requestTranslation = async (word, sentence) => {
-    const payloadKey = word + '||' + sentence + '||en';
+  const requestTranslation = async (word) => {
+    const payloadKey = word + '||en';
     if (payloadKey === lastPayloadKey) return;
     lastPayloadKey = payloadKey;
 
     const response = await fetch('/api/translate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ word, sentence, targetLang: 'en' })
+      body: JSON.stringify({ word, targetLang: 'en' })
     });
 
     if (!response.ok) {
@@ -625,7 +325,7 @@ function injectWebtrOverlay(html, baseUrl) {
       if (!info) return;
 
       try {
-        await requestTranslation(info.word, info.sentence);
+        await requestTranslation(info.word);
       } catch (error) {
         providersText.textContent = 'Translation failed: ' + error.message;
       }
@@ -847,105 +547,21 @@ async function handleTranslate(req, res) {
 
   req.on('end', async () => {
     try {
-      const { word, sentence } = JSON.parse(body || '{}');
+      const { word } = JSON.parse(body || '{}');
       const targetLang = 'en';
-      if (!word || !sentence) return send(res, 400, JSON.stringify({ error: 'word and sentence are required' }), 'application/json');
+      if (!word) return send(res, 400, JSON.stringify({ error: 'word is required' }), 'application/json');
 
-      const heuristicRoot = guessRoot(word);
-      const heuristicCompoundParts = extractFinnishCompoundParts(word);
+      const wordGoogle = await googleTranslate(word, targetLang);
+      const rankedTranslations = dedupeAndRank(wordGoogle.candidates);
+      const wordTranslation = rankedTranslations[0]?.text || wordGoogle.translated || '';
 
-      const chatgptResult = await (async () => {
-        try {
-          return await chatgptTranslate(word, sentence, targetLang);
-        } catch {
-          return null;
-        }
-      })();
-
-      const root = chatgptResult?.root || heuristicRoot;
-      const compoundParts = Array.isArray(chatgptResult?.compoundRoots) && chatgptResult.compoundRoots.length > 0
-        ? []
-        : heuristicCompoundParts;
-
-      const [wordGoogle, sentenceGoogle, rootGoogle] = await Promise.allSettled([
-        googleTranslate(word, targetLang),
-        googleTranslate(sentence, targetLang),
-        root ? googleTranslate(root, targetLang) : Promise.resolve({ translated: '', sourceLang: 'auto', candidates: [] })
-      ]);
-
-      const allCandidates = [];
-      let detectedLanguage = chatgptResult?.detectedLanguage || 'auto';
-      let wordMemory = { status: 'rejected' };
-
-      if (chatgptResult) {
-        allCandidates.push(...chatgptResult.candidates.map((item) => ({
-          ...item,
-          score: Math.max(1.1, Number(item.score) || 0)
-        })));
-      }
-
-      if (wordGoogle.status === 'fulfilled') {
-        allCandidates.push(...wordGoogle.value.candidates);
-        detectedLanguage = wordGoogle.value.sourceLang || detectedLanguage;
-
-        const myMemorySourceLang = normalizeLangCode(detectedLanguage);
-        const allowedMyMemorySources = new Set(['fi', 'sv', 'nl', 'it']);
-        if (allowedMyMemorySources.has(myMemorySourceLang)) {
-          try {
-            const value = await myMemoryTranslate(word, myMemorySourceLang, targetLang);
-            wordMemory = { status: 'fulfilled', value };
-          } catch {
-            wordMemory = { status: 'rejected' };
-          }
-        }
-      }
-
-      if (wordMemory.status === 'fulfilled') {
-        allCandidates.push(...wordMemory.value.candidates);
-      }
-
-      const rootTranslations = [
-        ...(chatgptResult?.rootTranslations || []),
-        ...(rootGoogle.status === 'fulfilled'
-          ? dedupeAndRank(rootGoogle.value.candidates).map((item) => item.text)
-          : [])
-      ].filter(Boolean).slice(0, 4);
-
-      const compoundRoots = [...(chatgptResult?.compoundRoots || [])];
-      if (compoundRoots.length === 0) {
-        for (const part of compoundParts) {
-          try {
-            const translatedPart = await googleTranslate(part, targetLang);
-            compoundRoots.push({
-              part,
-              translations: dedupeAndRank(translatedPart.candidates).map((item) => item.text).slice(0, 3)
-            });
-          } catch {
-            compoundRoots.push({ part, translations: [] });
-          }
-        }
-      }
-
-      const rankedTranslations = dedupeAndRank(allCandidates);
-      const chatgptSentenceTranslation = (chatgptResult?.sentenceTranslation || '').trim();
-      const googleSentenceTranslation = sentenceGoogle.status === 'fulfilled' ? sentenceGoogle.value.translated : '';
-      const sentenceTranslation = chatgptSentenceTranslation || googleSentenceTranslation;
-      const contextMeaning = (chatgptResult?.contextMeaning || '').trim() || pickContextMeaning(rankedTranslations, sentenceTranslation);
       const response = {
         word,
-        root,
-        rootTranslations,
-        compoundRoots,
-        contextMeaning,
-        detectedLanguage,
-        translations: rankedTranslations.filter((item) => item.text !== contextMeaning),
-        sentence,
-        sentenceTranslation,
+        wordTranslation,
+        detectedLanguage: wordGoogle.sourceLang || 'auto',
+        translations: rankedTranslations.filter((item) => item.text !== wordTranslation).slice(0, 5),
         providersUsed: {
-          chatgpt: Boolean(chatgptResult),
-          google: wordGoogle.status === 'fulfilled' || sentenceGoogle.status === 'fulfilled',
-          mymemory: wordMemory.status === 'fulfilled',
-          contextualInference: true
+          google: true
         }
       };
 
