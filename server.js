@@ -97,13 +97,13 @@ function rewriteAttributeUrls(html, baseUrl, proxyOrigin) {
   };
 
   const srcRe = /(src\s*=\s*["'])([^"']+)(["'])/gi;
-  const hrefRe = /(href\s*=\s*["'])([^"']+)(["'])/gi;
-  const actionRe = /(action\s*=\s*["'])([^"']+)(["'])/gi;
+  const anchorHrefRe = /(<a\b[^>]*\shref\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
+  const formActionRe = /(<form\b[^>]*\saction\s*=\s*["'])([^"']+)(["'][^>]*>)/gi;
 
   return html
     .replace(srcRe, (_, p1, url, p3) => `${p1}${rewriteSrc(url)}${p3}`)
-    .replace(hrefRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`)
-    .replace(actionRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`);
+    .replace(anchorHrefRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`)
+    .replace(formActionRe, (_, p1, url, p3) => `${p1}${toProxyUrl(url)}${p3}`);
 }
 
 function injectBase(html, baseUrl) {
